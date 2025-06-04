@@ -10,9 +10,12 @@ from telegram.ext import (
 )
 import time
 import os
+from dotenv import load_dotenv
+
 
 # Configuration
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "7746997083:AAHOqvozGY-8uGGvIGmoL0o3RYKYP00Wtig")
+load_dotenv()  # Load the .env file
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 BOT_USERNAME = "@par_expenses_bot"
 NAME1 = "@lilpardesu"  # Adds to balance
 NAME2 = "@Marymirzaei"  # Subtracts from balance
