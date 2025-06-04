@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -7,89 +8,151 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
+import time
+import os
 
 # Configuration
-BOT_TOKEN = '7746997083:AAHOqvozGY-8uGGvIGmoL0o3RYKYP00Wtig'
-BOT_USERNAME = '@par_expenses_bot'  # Must include the @ symbol
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "7746997083:AAHOqvozGY-8uGGvIGmoL0o3RYKYP00Wtig")
+BOT_USERNAME = "@par_expenses_bot"
+NAME1 = "@lilpardesu"  # Adds to balance
+NAME2 = "@Marymirzaei"  # Subtracts from balance
+
+# Database setup
+DB_FILE = "balances.db"
+
+def init_db():
+    """Initialize SQLite database"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS balances (
+        chat_id INTEGER PRIMARY KEY,
+        balance REAL DEFAULT 0
+    )
+    """)
+    conn.commit()
+    conn.close()
 
 # Set up logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
+# Database helper functions
+def get_balance(chat_id):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT balance FROM balances WHERE chat_id = ?", (chat_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else 0
+
+def update_balance(chat_id, amount):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT OR REPLACE INTO balances (chat_id, balance)
+    VALUES (?, COALESCE((SELECT balance FROM balances WHERE chat_id = ?), 0) + ?)
+    """, (chat_id, chat_id, amount))
+    conn.commit()
+    conn.close()
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for the /start command"""
+    """Welcome message with instructions"""
     await update.message.reply_text(
-        "🤖 I'm your expenses bot! Mention me in a group with "
-        f"{BOT_USERNAME} to interact with me."
+        "💰 Balance Tracker Bot\n\n"
+        f"• Mention {NAME1} with amount to add\n"
+        f"• Mention {NAME2} with amount to subtract\n\n"
+        "Commands:\n"
+        "/balance - Show current balance\n"
+        "/reset - Reset balance to 0\n\n"
+        "Example:\n"
+        "• '100 {NAME1}' → Adds 100\n"
+        "• '50 {NAME2}' → Subtracts 50"
     )
 
-async def handle_group_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for group mentions and messages"""
+async def show_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current balance"""
+    chat_id = update.message.chat.id
+    balance = get_balance(chat_id)
+    await update.message.reply_text(f"Current balance: {balance:.2f}")
+
+async def reset_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reset balance to zero"""
+    chat_id = update.message.chat.id
+    update_balance(chat_id, -get_balance(chat_id))
+    await update.message.reply_text("♻️ Balance reset to 0")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process balance updates"""
     if not update.message or not update.message.text:
         return
-    
-    # Log the incoming message for debugging
-    logger.info(
-        f"Message in {update.message.chat.type} (ID: {update.message.chat.id}): "
-        f"{update.message.text}"
-    )
-    
-    # Check if the bot was mentioned (using Telegram entity or text matching)
-    mentioned = False
-    
-    # Check for proper mention entities first
-    if update.message.entities:
-        for entity in update.message.entities:
-            if entity.type == "mention":
-                mentioned_text = update.message.text[
-                    entity.offset:entity.offset+entity.length
-                ].lower()
-                if mentioned_text == BOT_USERNAME.lower():
-                    mentioned = True
-                    break
-    
-    # Fallback to text matching if no entities found
-    if not mentioned and BOT_USERNAME.lower() in update.message.text.lower():
-        mentioned = True
-    
-    # Respond if mentioned
-    if mentioned:
-        await update.message.reply_text(
-            "✅ I heard my name! Here's what I can do:\n"
-            "- Track expenses with /add\n"
-            "- View summaries with /report\n"
-            "- Get help with /help"
+
+    chat_id = update.message.chat.id
+    text = update.message.text.lower()
+
+    try:
+        # Find the first number in message
+        amount = next(
+            (float(word) for word in text.split() 
+            if word.replace('.', '', 1).isdigit())
         )
 
-def main():
-    """Start the bot"""
-    # Create the Application
+        # Determine action
+        if NAME1.lower() in text:
+            update_balance(chat_id, amount)
+            action = f"➕ Added {amount:.2f} (via {NAME1})"
+        elif NAME2.lower() in text:
+            update_balance(chat_id, -amount)
+            action = f"➖ Subtracted {amount:.2f} (via {NAME2})"
+        else:
+            return
+
+        new_balance = get_balance(chat_id)
+        await update.message.reply_text(
+            f"{action}\n"
+            f"New balance: {new_balance:.2f}"
+        )
+
+    except (StopIteration, ValueError):
+        pass  # No valid number found
+
+def create_application():
+    """Create and configure bot application"""
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Add handlers
+    # Command handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("balance", show_balance))
+    application.add_handler(CommandHandler("reset", reset_balance))
     
-    # Handler for group messages (only triggers when privacy mode is disabled)
+    # Message handler
     application.add_handler(MessageHandler(
-        filters.TEXT & (filters.ChatType.GROUPS) & ~filters.COMMAND,
-        handle_group_mention
+        filters.TEXT & filters.ChatType.GROUPS,
+        handle_message
     ))
     
-    # Handler for mentions (works even in privacy mode)
-    application.add_handler(MessageHandler(
-        filters.TEXT & filters.Entity("mention"),
-        handle_group_mention
-    ))
-    
-    # Start the bot
-    logger.info("Starting bot...")
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
+    return application
 
-if __name__ == '__main__':
-    main()
+def run_bot():
+    """Run with automatic crash recovery"""
+    init_db()
+    logger.info("Initializing database...")
+    
+    while True:
+        try:
+            app = create_application()
+            logger.info("Bot started successfully")
+            app.run_polling()
+        except Exception as e:
+            logger.error(f"Bot crashed: {e}")
+            time.sleep(10)
+
+if __name__ == "__main__":
+    run_bot()
