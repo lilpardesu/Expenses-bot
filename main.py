@@ -143,19 +143,27 @@ def create_application():
     
     return application
 
+
 def run_bot():
-    """Run with automatic crash recovery"""
+    """Run with webhook for Render deployment"""
     init_db()
     logger.info("Initializing database...")
+
+    app = create_application()
+    logger.info("Bot started successfully")
+
+    # Run webhook instead of polling
+    port = int(os.environ.get("PORT", 10000))
+    url = os.environ.get("RENDER_EXTERNAL_URL")
+    if url is None:
+        raise Exception("RENDER_EXTERNAL_URL not set")
     
-    while True:
-        try:
-            app = create_application()
-            logger.info("Bot started successfully")
-            app.run_polling()
-        except Exception as e:
-            logger.error(f"Bot crashed: {e}")
-            time.sleep(10)
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        webhook_url=f"{url}/{BOT_TOKEN}"
+    )
+
 
 if __name__ == "__main__":
     run_bot()
